@@ -31,6 +31,8 @@ function positionLyric() {
   lyricEl.style.top   = (v.y + v.h + (spaceBelow - lyricEl.offsetHeight) / 2) + 'px';
 }
 
+// 'load' won't fire for cached images, so check complete first
+if (lyricEl.complete) positionLyric();
 lyricEl.addEventListener('load', positionLyric);
 window.addEventListener('resize', () => { resize(); positionLyric(); });
 
