@@ -1,0 +1,30 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #fff; overflow: hidden; }
+canvas { display: block; }
+
+#title {
+  position: fixed;
+  top: 28px;
+  left: 32px;
+  width: 180px;
+  pointer-events: none;
+}
+
+#lyric {
+  position: fixed;
+  pointer-events: none;
+}
+
+#permission-error {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-family: sans-serif;
+  font-size: 1rem;
+  color: #761400;
+  text-align: center;
+  padding: 2rem;
+  pointer-events: none;
+}
