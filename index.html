@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>The Cure</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #fff; overflow: hidden; }
+    canvas { display: block; }
+    #title {
+      position: fixed;
+      top: 28px;
+      left: 32px;
+      width: 180px;
+      pointer-events: none;
+    }
+    #lyric {
+      position: fixed;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <img id="title" src="the_cure_title.png" alt="the cure">
+  <img id="lyric" src="lyric.png" alt="you seem pretty sad for a girl so in love">
+  <video id="video" playsinline style="display:none"></video>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx    = canvas.getContext('2d');
+    const video  = document.getElementById('video');
+
+    function resize() {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Camera viewport: 16:9, ~70% of window width, centred
+    function vp() {
+      const W = canvas.width, H = canvas.height;
+      const w = Math.round(W * 0.70);
+      const h = Math.round(w * 9 / 16);
+      return { x: Math.round((W - w) / 2), y: Math.round((H - h) / 2), w, h };
+    }
+
+    // ── Rope constants ─────────────────────────────────────────────────────
+    const SEGMENT_PX    = 8;
+    const MAX_SEGMENTS  = 50;
+    const GROW_EVERY    = 3;
+    const RETRACT_SPEED = 3;
+    const SWAY_AMP      = 2.5;
+    const SWAY_FREQ     = 0.0016;
+    const SWAY_PER_NODE = 0.38;
+    const SMOOTH        = 0.82;
+
+    const FINGERS = [
+      { tip: 4,  dip: 3,  pip: 5  },
+      { tip: 8,  dip: 7,  pip: 6  },
+      { tip: 12, dip: 11, pip: 10 },
+      { tip: 16, dip: 15, pip: 14 },
+      { tip: 20, dip: 19, pip: 18 },
+    ];
+
+    const ropes = new Map();
+    let results  = null;
+    let frameNum = 0;
+
+    function isExtended(lms, tipId, pipId) {
+      const w = lms[0], tip = lms[tipId], pip = lms[pipId];
+      return Math.hypot(tip.x - w.x, tip.y - w.y) >
+             Math.hypot(pip.x - w.x, pip.y - w.y);
+    }
+
+    function buildPts(tipX, tipY, dirX, dirY, n, t) {
+      const perpX = -dirY, perpY = dirX;
+      const pts = [];
+      for (let i = 0; i < n; i++) {
+        const sway = Math.sin(t * SWAY_FREQ + i * SWAY_PER_NODE) * SWAY_AMP;
+        pts.push({ x: tipX + dirX * i * SEGMENT_PX + perpX * sway,
+                   y: tipY + dirY * i * SEGMENT_PX + perpY * sway });
+      }
+      return pts;
+    }
+
+    function drawRope(pts) {
+      const n = pts.length;
+      if (n < 2) return;
+
+      const grad = ctx.createLinearGradient(
+        pts[0].x, pts[0].y, pts[n - 1].x, pts[n - 1].y
+      );
+      grad.addColorStop(0, 'rgba(118, 0, 14, 0.95)');
+      grad.addColorStop(1, 'rgba(118, 0, 14, 0.38)');
+
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < n - 1; i++) {
+        const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+        const my = (pts[i].y + pts[i + 1].y) * 0.5;
+        ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+      ctx.lineTo(pts[n - 1].x, pts[n - 1].y);
+      ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = grad;
+      ctx.stroke();
+
+      for (let i = 1; i < n; i++) {
+        const a  = 0.85 - (i / n) * 0.5;
+        const p0 = pts[i - 1], p1 = pts[i];
+        const dx = p1.x - p0.x, dy = p1.y - p0.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.1) continue;
+        const nx = -dy / len, ny = dx / len;
+        const steps = Math.max(1, Math.ceil(len / 3));
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const px = p0.x + dx * t, py = p0.y + dy * t;
+          const off = Math.sin((i * 1.1 + s * 0.28) * 0.55) * 1.5;
+          ctx.beginPath();
+          ctx.arc(px + nx * off, py + ny * off, 0.9, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(215, 75, 95, ${a * 0.65})`;
+          ctx.fill();
+        }
+      }
+
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 150, 150, 0.85)';
+      ctx.fill();
+    }
+
+    // ── String border around the video frame ──────────────────────────────
+    function drawStringBorder(v, t) {
+      const { x, y, w, h } = v;
+      const S   = 6;   // px between points
+      const pts = [];
+
+      // Walk the perimeter clockwise: top → right → bottom → left → close
+      for (let px = x;      px < x + w; px += S) pts.push([px,     y    ]);
+      for (let py = y;      py < y + h; py += S) pts.push([x + w,  py   ]);
+      for (let px = x + w;  px > x;     px -= S) pts.push([px,     y + h]);
+      for (let py = y + h;  py > y;     py -= S) pts.push([x,      py   ]);
+      pts.push([x, y]); // close back to start
+
+      // Pass 1 — dark maroon base cord
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.strokeStyle = 'rgba(118, 0, 14, 0.92)';
+      ctx.lineWidth   = 3.5;
+      ctx.lineCap     = 'round';
+      ctx.lineJoin    = 'round';
+      ctx.stroke();
+
+      // Pass 2 — sinusoidal twist dots (same visual as finger ropes)
+      for (let i = 1; i < pts.length; i++) {
+        const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+        const dx = x1 - x0, dy = y1 - y0;
+        const len = Math.hypot(dx, dy);
+        if (len < 0.1) continue;
+        const nx = -dy / len, ny = dx / len;
+        const steps = Math.ceil(len / 4);
+        for (let s = 0; s <= steps; s++) {
+          const f     = s / steps;
+          const phase = (i + f + t * 0.00015) * 0.8;
+          const off   = Math.sin(phase) * 1.5;
+          ctx.beginPath();
+          ctx.arc(x0 + dx * f + nx * off, y0 + dy * f + ny * off, 0.85, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(215, 75, 95, 0.62)';
+          ctx.fill();
+        }
+      }
+    }
+
+    // ── Render loop ────────────────────────────────────────────────────────
+    function render() {
+      requestAnimationFrame(render);
+      frameNum++;
+
+      const W = canvas.width, H = canvas.height;
+      const v  = vp();
+      const now = performance.now();
+
+      // Clear to transparent so white page background shows through
+      ctx.clearRect(0, 0, W, H);
+
+      // Clip camera + ropes to the video frame — ropes vanish at the border
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(v.x, v.y, v.w, v.h);
+      ctx.clip();
+
+      // Camera feed
+      ctx.save();
+      ctx.translate(v.x + v.w, v.y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, v.w, v.h);
+      ctx.restore();
+
+      // Rope effects
+      const active      = new Set();
+      const visibleSides = new Set(); // hand labels MediaPipe currently sees
+
+      if (results?.multiHandLandmarks?.length) {
+        results.multiHandLandmarks.forEach((lms, hi) => {
+          const side = results.multiHandedness?.[hi]?.label ?? `H${hi}`;
+          visibleSides.add(side);
+
+          FINGERS.forEach(({ tip: tipId, dip: dipId, pip: pipId }) => {
+            const key = `${side}_${tipId}`;
+            if (!isExtended(lms, tipId, pipId)) return;
+
+            active.add(key);
+
+            const tipLm = lms[tipId], dipLm = lms[dipId];
+            const tx  = v.x + (1 - tipLm.x) * v.w;
+            const ty  = v.y +      tipLm.y  * v.h;
+            const rdx = tx - (v.x + (1 - dipLm.x) * v.w);
+            const rdy = ty - (v.y +      dipLm.y  * v.h);
+            const rlen = Math.hypot(rdx, rdy);
+            const rawDirX = rlen > 0.5 ? rdx / rlen : 0;
+            const rawDirY = rlen > 0.5 ? rdy / rlen : -1;
+
+            if (!ropes.has(key)) {
+              ropes.set(key, { numPts: 2, tipX: tx, tipY: ty,
+                               dirX: rawDirX, dirY: rawDirY });
+            }
+            const rope = ropes.get(key);
+
+            rope.tipX = rope.tipX * SMOOTH + tx      * (1 - SMOOTH);
+            rope.tipY = rope.tipY * SMOOTH + ty      * (1 - SMOOTH);
+            rope.dirX = rope.dirX * SMOOTH + rawDirX * (1 - SMOOTH);
+            rope.dirY = rope.dirY * SMOOTH + rawDirY * (1 - SMOOTH);
+
+            const dlen = Math.hypot(rope.dirX, rope.dirY);
+            const sDirX = dlen > 0.01 ? rope.dirX / dlen : rawDirX;
+            const sDirY = dlen > 0.01 ? rope.dirY / dlen : rawDirY;
+
+            if (frameNum % GROW_EVERY === 0 && rope.numPts < MAX_SEGMENTS) rope.numPts++;
+
+            drawRope(buildPts(rope.tipX, rope.tipY, sDirX, sDirY, rope.numPts, now));
+          });
+        });
+      }
+
+      for (const [key, rope] of ropes) {
+        if (active.has(key)) continue;
+        const side = key.split('_')[0];
+        // Hand gone entirely (or label flipped) → vanish fast to kill ghost strings
+        rope.numPts -= visibleSides.has(side) ? RETRACT_SPEED : 10;
+        if (rope.numPts <= 0) ropes.delete(key);
+      }
+
+      ctx.restore(); // lift viewport clip
+
+      // Red twisted-string border around the video frame
+      drawStringBorder(v, now);
+    }
+
+    // ── MediaPipe ──────────────────────────────────────────────────────────
+    const hands = new Hands({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+    });
+    hands.setOptions({
+      maxNumHands: 2, modelComplexity: 1,
+      minDetectionConfidence: 0.7, minTrackingConfidence: 0.5
+    });
+    hands.onResults(r => { results = r; });
+
+    const cam = new Camera(video, {
+      onFrame: async () => { await hands.send({ image: video }); },
+      width: 1280, height: 720
+    });
+
+    // Position lyric centred in the space below the video frame
+    const lyricEl = document.getElementById('lyric');
+    function positionLyric() {
+      const v = vp();
+      const spaceBelow = canvas.height - (v.y + v.h);
+      lyricEl.style.width = v.w + 'px';
+      lyricEl.style.left  = v.x + 'px';
+      lyricEl.style.top   = (v.y + v.h + (spaceBelow - lyricEl.offsetHeight) / 2) + 'px';
+    }
+    lyricEl.onload = positionLyric;
+    window.addEventListener('resize', positionLyric);
+
+    cam.start().catch(console.error);
+    render();
+  </script>
+</body>
+</html>
