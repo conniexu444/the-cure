@@ -131,29 +131,5 @@ export class Rope {
     ctx.lineTo(vis[n - 1].x, vis[n - 1].y);
     ctx.stroke();
 
-    // Pass 2 — sinusoidal twist dots
-    for (let i = 1; i < n; i++) {
-      const alpha  = 0.85 - (i / n) * 0.5;
-      const p0 = vis[i - 1], p1 = vis[i];
-      const dx = p1.x - p0.x, dy = p1.y - p0.y;
-      const len = Math.hypot(dx, dy);
-      if (len < 0.1) continue;
-      const nx    = -dy / len, ny = dx / len;
-      const steps = Math.max(1, Math.ceil(len / 3));
-      ctx.fillStyle = `rgba(215, 75, 95, ${alpha * 0.65})`;
-      for (let s = 0; s <= steps; s++) {
-        const f   = s / steps;
-        const off = Math.sin((i * 1.1 + s * 0.28) * 0.55) * 1.5;
-        ctx.beginPath();
-        ctx.arc(p0.x + dx * f + nx * off, p0.y + dy * f + ny * off, 0.9, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // Pass 3 — anchor glow dot
-    ctx.beginPath();
-    ctx.arc(vis[0].x, vis[0].y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 150, 150, 0.85)';
-    ctx.fill();
   }
 }

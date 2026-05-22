@@ -20,21 +20,4 @@ export function drawStringBorder(ctx, v, t) {
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(215, 75, 95, 0.62)';
-  for (let i = 1; i < pts.length; i++) {
-    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
-    const dx  = x1 - x0, dy = y1 - y0;
-    const len = Math.hypot(dx, dy);
-    if (len < 0.1) continue;
-    const nx    = -dy / len, ny = dx / len;
-    const steps = Math.ceil(len / 4);
-    for (let s = 0; s <= steps; s++) {
-      const f     = s / steps;
-      const phase = (i + f + t * 0.00015) * 0.8;
-      const off   = Math.sin(phase) * 1.5;
-      ctx.beginPath();
-      ctx.arc(x0 + dx * f + nx * off, y0 + dy * f + ny * off, 0.85, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
 }
